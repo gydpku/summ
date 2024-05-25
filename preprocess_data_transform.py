@@ -4,7 +4,7 @@ import torch
 from datasets import Dataset,load_dataset, DownloadConfig, load_from_disk
 from transformers import AutoTokenizer
 import datasets
-from mingpt.utils import CfgNode as CN
+from utils import CfgNode as CN
 
 
 def get_config():
