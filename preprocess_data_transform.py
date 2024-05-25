@@ -1,7 +1,7 @@
 import sys
 import os
 import torch
-from datasets import load_dataset, DownloadConfig, load_from_disk
+from datasets import Dataset,load_dataset, DownloadConfig, load_from_disk
 from transformers import AutoTokenizer
 import datasets
 from mingpt.utils import CfgNode as CN
@@ -20,7 +20,7 @@ def get_config():
     C.dataset.cache_dir = '/gpfs/u/home/LSMC/LSMCshnk/scratch/yiduo/datasets/dataset_cache' #/gpfs/u/home/LSMC/LSMCshnk/scratch
 
     C.model = CN()
-    C.model.block_size = 2048
+    C.model.block_size = 8192
 
     C.trainer = CN()
     C.trainer.continuous_chunks = 48
@@ -42,7 +42,7 @@ def load_tokenizer(config):
 
 
 def preprocess_data(config, tokenizer):
-    dataset_path = os.path.join('/gpfs/u/home/LSMC/LSMCshnk/scratch/yiduo/datasets', 'tiiuae/falcon-refinedweb', config.dataset.name)
+    dataset_path = os.path.join('/dccstor/obsidian_llm/yiduo/', 'pubmed') 
     tokenized_dataset_path =  dataset_path + 'pubmed_tokenized' #dataset_path + 'pile_llama_v2_tokenized' #'medical_new_gemma_tokenized'
     bsize = config.model.block_size * config.trainer.continuous_chunks
     chunked_dataset_path = dataset_path + ' pile_pubmed_llamav2_hq_chunked_%d' % bsize #50b_v2
@@ -50,63 +50,22 @@ def preprocess_data(config, tokenizer):
     from math import inf
     from model import KenlmModel
     ngram_model = KenlmModel.from_pretrained("wikipedia", "en") #model = KenlmModel.from_pretrained("wikipedia", "en")
-    import pdb
-    pdb.set_trace()    
     if os.path.exists(tokenized_dataset_path):
 
         print("Loading tokenized dataset...")
         tokenized_dataset = load_from_disk(tokenized_dataset_path)
     else:
-        if os.path.exists(dataset_path):
-            print("Loading dataset...")
-            os.environ['HF_DATASETS_CACHE'] = '/gpfs/u/home/LSMC/LSMCshnk/scratch/yikang/datasets/the_pile/all/train' 
-            os.environ['FSSPEC_LOCAL_TEMP'] = '/gpfs/u/home/LSMC/LSMCshnk/scratch/yikang/datasets/the_pile/all/train'  
-            os.environ['HF_HOME'] = '/gpfs/u/home/LSMC/LSMCshnk/scratch/yikang/datasets/the_pile/all/train'   #import os
-            os.environ['TMPDIR'] ='/gpfs/u/home/LSMC/LSMCshnk/scratch/yikang/datasets/the_pile/all/train'
-            raw_dataset = load_from_disk('/gpfs/u/home/LSMC/LSMCshnk/scratch/yikang/datasets/the_pile/all/train',keep_in_memory=True) #load_dataset('suolyer/pile_pubmed-abstracts',cache_dir='/gpfs/u/home/LSMC/LSMCshnk/scratch/SparseGPT') #load_from_disk(dataset_path) #'/gpfs/u/home/LSMC/LSMCshnk/scratch/yikang/datasets/the_pile_neox/all/test')
-        else:
-            print("Downloading dataset...",config.dataset.path,config.dataset.name)
-
-            download_config = DownloadConfig(
-                cache_dir=os.path.join(config.dataset.cache_dir, 'downloads'),
-                resume_download=True,
-                num_proc=config.dataset.num_proc,
-                max_retries=10)
-            #config.dataset.path='/gpfs/u/home/LSMC/LSMCshnk/.cache/huggingface/modules/datasets_modules/datasets/wikitext/'
-            raw_dataset = load_dataset(
-                config.dataset.path,
-                config.dataset.name,
-                cache_dir=config.dataset.cache_dir,
-                download_config=download_config,
-            )
-            import pdb
- #           pdb.set_trace()
-            print("Saving dataset to disk...")
-            raw_dataset.save_to_disk(
-                dataset_path,
-                max_shard_size="200GB",                
-)
+        print("Loading dataset...")
+        data=[]
+        with open('the-pile-pubmed-abstract-refine-result.jsonl', 'r') as file:
+            for line in file:
+                data.append(json.loads(line))
+        with open('the-pile-pubmed-central-refine-result.jsonl', 'r') as file:
+            for line in file:
+                data.append(json.loads(line))
+        raw_dataset=Dataset.from_dict({key: [str(dic[key]) for dic in data] for key in data[0]}) 
+        #dict_keys(['meta', 'text', 'stats', 'simhash']) 
         print("Encoding dataset...")
-        #pdb.set_trace() #import pdb
-        def filter_examples(example):
-            #try:
-            #aaa=str(example['timestamp'])
-            #if '2021' not in str(example['timestamp']):
-            #    print(str(example['timestamp']))
-            #if isinstance(example['timestamp'], list):
-            #    print(example['timestamp'],'list')
-            try:
-                sample_year=example['timestamp'].year
-                #print(str(example['timestamp']),example['timestamp'].year)
-            except:
-                #print(example['timestamp'],'list_err')
-                #pdb.set_trace()
-                sample_year=0
-            return example if sample_year ==2021 or sample_year ==2022 else []
-        import torch
-        from torch.nn import functional as F
-        filtered_dataset = raw_dataset.filter(lambda example: 'PubMed' in example['meta']['pile_set_name']) 
-        raw_dataset=filtered_dataset #.select(range(2000000,3000000)) #raw_dataset=raw_dataset.filter(filter_examples,num_proc=config.dataset.num_proc*16) #pdb.set_trace(
         def get_ppl(examples):
             content=examples['text'] #examples['input_ids'] #tokenizer(examples['content'],return_tensors="pt")['input_ids']
             if content=='.' or content=='./n' or content=='.\n' or content=='\n.' or content ==', .\n':
@@ -133,16 +92,10 @@ def preprocess_data(config, tokenizer):
             return {
             'ppl': [get_ppl(example) for example in examples],
              }
-        #pdb.set_trace()
-        #import concurrent.futures
         def process_example(id, example):
             ppl_result = get_ppl(example)
             raw_dataset['train'][id]['ppl'] = ppl_result['ppl']
-        #raw_dataset = raw_dataset.map(get_ppl,num_proc=2,desc="calculating ppl on dataset",) #num_processes = 4 #raw_dataset = raw_dataset.map(
-       # with concurrent.futures.ProcessPoolExecutor(max_workers=num_processes) as executor:
-       #     futures = [executor.submit(process_example, id, example) for id, example in enumerate(raw_dataset['train'])] #    get_ppl, 
-        #concurrent.futures.wait(futures) #    num_proc=32,
-        tokenizer_llama = AutoTokenizer.from_pretrained('/gpfs/u/home/LSMC/LSMCshnk/scratch/SparseGPT/llama-3b-v2') #'google/gemma-2b') #'TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T') #'TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T') #    desc="calculating ppl on dataset",) #
+        tokenizer_llama = AutoTokenizer.from_pretrained('/dccstor/obsidian_llm/yiduo/h100_data/llama-3-8b') #'google/gemma-2b') #'TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T') #'TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T') #    desc="calculating ppl on dataset",) #
         raw_dataset=raw_dataset.sort('ppl')
         pdb.set_trace() #        )
         def encode(examples):
@@ -155,14 +108,10 @@ def preprocess_data(config, tokenizer):
         tokenized_dataset = raw_dataset.map(
             encode, 
             batched=True, 
-            remove_columns=['text','meta'], #, 'ppl','dump', 'segment', 'image_urls'], 
+            remove_columns=['text','meta','stats', 'simhash'], #, 'ppl','dump', 'segment', 'image_urls'], 
             num_proc=16, #32, #64,
             desc="Running tokenizer on dataset",
             writer_batch_size=200)
-        #raw_dataset = raw_dataset.map(get_ppl,num_proc=2,desc="calculating ppl on dataset",)
-        #import pdb
-        #pdb.set_trace()
-
         print("Saving dataset to disk...")
         tokenized_dataset.save_to_disk(
             dataset_path + '_tokenized',
@@ -170,7 +119,6 @@ def preprocess_data(config, tokenizer):
             )
     import torch
     from torch.nn.utils.rnn import pad_sequence,pack_padded_sequence
-    #pdb.set_trace() #max_seq_length=2048
     def get_ppl(examples):
             #import pdb
             #pdb.set_trace() #tokenizer(examples['content'])['input_ids']
